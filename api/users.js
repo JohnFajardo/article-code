@@ -8,4 +8,10 @@ router.get('/', (req, res) => {
     })
 });
 
+router.get('/:id', (req, res, next) => {
+    queries.getOne('users', req.params.id).then(user => {
+        res.json(user);
+    })
+});
+
 module.exports = router;
