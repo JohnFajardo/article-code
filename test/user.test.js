@@ -24,4 +24,18 @@ describe('Testing users', () => {
                 console.log(e);
             });
     });
+
+    it('Lists one user byt its ID', (done) => {
+        request(app)
+            .get('/users/1')
+            .set('Accept', 'application/json')
+            .expect('Content-Type', /json/)
+            .expect(200)
+            .then((response) => {
+                expect(response.body).to.be.a('object');
+                done();
+            }).catch((e) => {
+                console.log(e)
+            });
+    });
 });
