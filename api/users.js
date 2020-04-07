@@ -22,8 +22,8 @@ router.post('/signup', (req, res) => {
 });
 
 router.post('/login', (req, res) => {
-    queries.login(req.body.username, req.body.password).then((user) => {
-        res.json(user);
+    queries.login(req.body.username, req.body.password).then((token) => {
+        res.json(token);
     });
 });
 
