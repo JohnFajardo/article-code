@@ -3,6 +3,7 @@ exports.up = function (knex) {
         table.increments(); // This will set up an id field with autoincrement set to true and an unique constraint
         table.string('username');
         table.string('email');
+        table.string('password_hash');
     });
 };
 
