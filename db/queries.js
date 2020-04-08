@@ -1,6 +1,5 @@
 const knex = require('./knex');
 const argon = require('argon2');
-const auth = require('../api/auth');
 
 module.exports = {
     getAll(table) {
@@ -31,14 +30,19 @@ module.exports = {
 
         try {
             if (await argon.verify(user.password_hash, password)) {
-                return auth.getToken(user.id);
+                return user;
             } else {
-                console.log('password did not match')
+                console.log('password did not match'); // todo: add logic
             }
         } catch (e) {
             console.error(e);
             process.exit(1);
         }
 
+    },
+
+    getToken(token) {
+        return token;
     }
 }
+

@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const queries = require('../db/queries');
-const argon = require('argon2');
+const auth = require('../middleware/auth');
 
 router.get('/', (req, res) => {
     queries.getAll('users').then(users => {
@@ -22,9 +22,20 @@ router.post('/signup', (req, res) => {
 });
 
 router.post('/login', (req, res) => {
-    queries.login(req.body.username, req.body.password).then((token) => {
-        res.json(token);
+    queries.login(req.body.username, req.body.password).then((user) => {
+        if (user) {
+            res.json(auth.getToken(user.id, user.username));
+        } else {
+            return res.sendStatus(401);
+        }
     });
 });
+
+router.get('/profile', (req, res) => {
+    queries.getToken(req.header).then((data) => {
+        res.json(data);
+    })
+});
+
 
 module.exports = router;
