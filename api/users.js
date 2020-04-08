@@ -31,10 +31,10 @@ router.post('/login', (req, res) => {
     });
 });
 
-router.get('/profile', (req, res) => {
-    queries.getToken(req.header).then((data) => {
+router.post('/profile', (req, res) => {
+    queries.getToken(req.header('Authorization').replace('Bearer ', '')).then((data) => {
         res.json(data);
-    })
+    });
 });
 
 

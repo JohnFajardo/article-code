@@ -1,5 +1,6 @@
 const knex = require('./knex');
 const argon = require('argon2');
+const auth = require('../middleware/auth')
 
 module.exports = {
     getAll(table) {
@@ -41,8 +42,9 @@ module.exports = {
 
     },
 
-    getToken(token) {
-        return token;
+    async getToken(token) {
+        newToken = auth.decodeToken(token)
+        return newToken;
     }
 }
 
