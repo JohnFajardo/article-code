@@ -9,7 +9,7 @@ router.get('/', (req, res) => {
     });
 });
 
-router.get('/:id', (req, res, next) => {
+router.get('/:id', (req, res) => {
     queries.getOne('users', req.params.id).then(user => {
         res.json(user);
     });
@@ -22,20 +22,22 @@ router.post('/signup', (req, res) => {
 });
 
 router.post('/login', (req, res) => {
-    queries.login(req.body.username, req.body.password).then((user) => {
-        if (user) {
+    if (req.body.username == '' || req.body.password == '') {
+        res.status(401).send({ error: "Wrong username or password" });
+    } else {
+        queries.login(req.body.username, req.body.password).then((user) => {
             res.json(auth.getToken(user.id, user.username));
-        } else {
-            return res.sendStatus(401);
-        }
-    });
+        })
+            .catch((error) => {
+                res.status(401).send({ error: 'Wrong username or password' });
+            });
+    }
 });
 
 router.post('/profile', (req, res) => {
-    queries.getToken(req.header('Authorization').replace('Bearer ', '')).then((data) => {
+    queries.getToken(req.header('Authorization').replace('Bearer: ', '')).then((data) => {
         res.json(data);
     });
 });
-
 
 module.exports = router;

@@ -1,5 +1,6 @@
 exports.seed = function (knex) {
-  return knex('posts').del()
+  knex('posts').del();
+  return knex.raw('TRUNCATE TABLE posts RESTART IDENTITY CASCADE')
     .then(function () {
       return knex('posts').insert([
         {
