@@ -532,3 +532,230 @@ If you have issues at this point, try deleting both the development and testing 
 Finally, to see it in action, go back to the console and type `nodemon`, then fire up postman and make get requests to `http://localhost:3000/users`, `http://localhost:3000/posts` and `http://localhost:3000/comments`. If everything went well, you should see the data we entered in the seed files formatted as json.
 
 That's it for today! Stay tuned for new functionality next week.
+
+# Part 4
+
+If you’re new to the series, click here for part 1, part 2 and part 3. We now have a basic API where we can do basic queries for posts, comments and users, but speaking of users, we have no actual way of signing up or logging in or out. Let’s take care of that.
+Adding new dependencies
+
+Fire up a terminal on your project folder and run npm i -S argon2 body-parser jsonwebtoken:
+
+* As always, the i is shorthand for the --installswitch and -S is shorthand the --save switch.
+* argon2 is an award-winning password hashing function that we’ll use to save our users’ password hashes instead of saving the passwords themselves to the database.
+* body-parser is a middleware that we’ll use to parse the body of our incoming requests.
+* Finally, jsonwebtoken is a token generator that we’ll use to store in our users’ browsers to keep their sessions alive.
+
+Now we need to update our app.js file to include body-parser:
+
+```
+const bodyparser = require('body-parser')
+app.use(bodyparser.json());
+```
+
+## Changing the database
+
+So far we’re storing our user’s username and email, but we’re not saving their password hashes, so open your timeStamp_create-users.js file and add the following line:
+
+```
+table.string('password_hash');
+```
+
+And then rerun your migrations. If you have any problems rerunning th migrations, just delete the database by running dropdb yourDatabaseName and recreate it by running createdb yourDatabaseName. Mind you, when you run your seeds, your users will not have a hash, so we’ll take care of that later on.
+Signing up new users: the route
+
+Remember how the queries file worked closely with the routes? It’s that time again! Let’s start with the route. In your users.js file, add the following:
+
+```
+router.post('/signup', (req, res) => {
+    queries.createUser(req.body.username, req.body.email, req.body.password).then(user => {
+        res.json(user[0]);
+    });
+});
+```
+
+So we’re creating a new route to /signup that takes a post request. Then we’re calling a function from our queries files that we haven’t written yet, but that it takes a username, an email address and a password. We will be sending that info as json, and thanks to body-parser, our data is parsed into strings that will be usable to our function when it gets it. Finally, we’re taking our function response and rendering it as json.
+Signing up new users: the function
+
+As explained earlier, our function, called createUser, takes three arguments: a username, an email and a password. We are going to use argon2 to hash the password before saving the user -sans their password for safety- to the database. Since argon2’s hashing function is asynchronous, we need to use async/await in our function:
+
+```
+async createUser(username, email, password) {try {
+  let password_hash = await argon.hash(password);
+return knex('users').returning(['username', 'email']).insert({ username: username, email: email, password_hash: password_hash });} catch (error) {
+  console.log('That did not go well.');
+  console.error(error);
+  process.exit(1);
+  }
+}
+```
+
+At this point, you should also console log some hashes for you to copy to your seeds file.
+
+To test our signup functionality, fire up Postman and make a post request to http://localhost:3000/users/signup with this as the body:
+
+```
+{
+ "username": "Tony Stark",
+ "email": "irontony@starkindustries.biz",
+ "password": "IamIronMan"
+}
+```
+
+You’ll get the following response:
+
+```
+{
+"username": "Tony Stark",
+"email": "irontony@starkindustries.biz"
+}
+```
+
+And if you check your database, you’ll see your new user there, complete with it’s password hash. Cool, now let’s make our users log in!
+Creating our JWT signing function
+
+Before we log in, we need a way to issue tokens. Our users should make a post request to our login route and then get a token that we can grab from our frontend. To start, create a new folder in your project root called middleware. Inside, create a file called auth.js and paste the following:
+
+```
+const jwt = require('jsonwebtoken');
+const privateKey = process.env.jwt_secret;module.exports = {
+    getToken(userID, username) {
+        const payload = { user_id: userID, username: username };
+        return jwt.sign(payload, privateKey, { algorithm: 'HS256', noTimestamp: true });
+    },decodeToken(token) {
+        return jwt.verify(token, privateKey);
+    }
+}
+```
+
+We will use these methods later to generate and read tokens. But before we do, we need to add an environment variable to our system and add the following:
+
+```
+jwt_secret='someRandomStringOfYourChoice'
+```
+
+JWT uses this string to generate the tokens and it’s very important that you don’t share them publicly on GitHub since it’s a huge security risk. Click here for instructions for Mac, Windows and Linux. If you have a hard time setting up an environment variable on your system, you can replace process.env.jwt_secret with the string you want to use, but ONLY AS A TEMPORARY MEASURE. This is terrible practice, a security hole and you’ll look bad to the world, so don’t commit your changes until you take care of this.
+How JWT works
+
+JWT is a token generator that needs three pieces of information:
+
+* A header that tells it what hashing algorithm to use.
+* A payload, which is the actual information we want to store.
+* And a signature, which at the very least requires a secret word, which we set in our environment variable.
+
+If you go to jwt.io, you can play around with it in a visual way. There’s a section to the right of the screen in which you can input the information you want and see the token update to the left. So for example, you can leave the header section the way it is and then erase the payload section and replace it with
+
+```
+{
+  "id": 1,
+  "username": "John Doe"
+}
+```
+
+and set the secret to awesomesecret, you get the following token:
+
+```
+eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MSwidXNlcm5hbWUiOiJKb2huIERvZSJ9.zF7dg9DVjjTIGWnS2_AQa67v3i1Y0oxBQXLsMRd2lEA
+```
+
+See how they’re separated by dots? Each group represents the header, the payload and the signature respectively.
+
+How is any of this useful? Note that after the token, there’s a blue checkmark saying Signature Verified, which means that all the information provided is correct. To test it, paste this in the token section:
+
+```
+eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MSwidXNlcm5hbWUiOiJKb2huIERvZSJ9.J-RT_r_PN0izkBzUTt4nsbbvmBXIvXECB2t-PzASn1o
+```
+
+See how it now says Invalid Signature? That’s because I changed the secret to superawesomesecret. Go ahead and change it yourself so you can see it in action.
+
+Coming back to our function, we have all the pieces we need to build our token. We have our private key (the secret word), we are building a payload that has the username and their id and we finally call jwt.sign with the payload, the secret and an object that will become the header. Finally, we’re returning the token.
+
+Our second method, decodeToken, does what it says: it checks the validity of the supplied token using the private key we set up earlier.
+Logging users in
+
+With our token system in place, we can now proceed to build our login functionality. We’re going to build a new /login route that will send a query to the database with the username and the password, then when it gets the user back, it will return a token based on the user info:
+
+```
+router.post('/login', (req, res) => {
+  queries.login(req.body.username, req.body.password).then((user) => {
+  if (user) {
+    res.json(auth.getToken(user.id, user.username));
+  } else {
+      return res.sendStatus(401);
+    }
+  });
+});
+```
+
+Then we can define our login function in the queries file:
+
+```
+async login(username, password) {
+  let getUser = await knex('users').where('username', username);
+  let user = getUser[0];
+  try {
+    if (await argon.verify(user.password_hash, password)) {
+      return user;
+    } else {
+      console.log('password did not match');
+    }
+    } catch (e) {
+        console.error(e);
+        process.exit(1);
+    }
+},
+```
+
+Our login function first gets a user with the supplied username. It the receives the user as an array with a single object, but since the function is asynchronous, we add the [0] after it’s returned. Then we’re making use of argon2’s verify function to compare the supplied password with the stored hash. If the comparison gives a match, we return the user, which in turn will be taken by the router to create a token and return it. The rest of the function is self-explanatory.
+
+Finally, we have one last route to make /profile, which is going to take the token, verify it and return the user’s name and id:
+
+```
+router.post('/profile', (req, res) => {
+    queries.getToken(req.header('Authorization').replace('Bearer ', '')).then((data) => {
+        res.json(data);
+    });
+});
+```
+
+First we need to assume that our frontend is using the browser localstorage to store our token as 'Bearer': ourToken. We’re grabbing the token from localstorage, stripping off the 'Bearer ' part and passing it to our getToken function in our queries file:
+
+```
+async getToken(token) {
+  newToken = auth.decodeToken(token)
+  return newToken;
+}
+```
+
+Then our router is going to render the token as json, which we can grab from the frontend to use the username and id. With it, our API is complete, yay!
+Room for improvement
+
+So far our API works, but it could use some work. For example, we’re not really handling password errors, so it crashes if you enter a wrong password. Also, if you’re a newcomer, it’s hard to see how we can really use all this since we’re just “rendering json”. We’re going to take care of that in the next and last part, where we’re going to fix things around and build a simple frontend in React. Stay tuned!
+
+# Part 5
+
+If you're new to the series, click here for part 1, part 2, part 3 and part 4. Our API is ready so it's time for a quick frontend, but first, let's take care of a few issues we left unsolved and make it do a little more.
+
+## Fixing the user seed file
+Our seed file worked at first, but then we were copying hashes from somewhere else and hardcoded them into the file. This works, but ideally, we should be generating our hashes at runtime, so open your seed file and change it like so:
+
+```
+exports.seed = (knex) => {
+  knex('users').del();
+  return knex.raw('TRUNCATE TABLE users RESTART IDENTITY CASCADE')
+    .then(async () => {
+      const users = [
+        { username: 'John Doe', email: 'johndoe@example.com', 'password': 'abc123' },
+        { username: 'Jane Doe', email: 'janedoe@example.com', 'password': 'abc123' },
+        { username: 'Rob Doe', email: 'robdoe@example.com', 'password': 'abc123' }
+      ];
+      for (user of users) {
+        user.password_hash = await argon.hash(user.password);
+      }
+      return knex('users').insert(users.map(({ password, ...rest }) => rest));
+    });
+}
+```
+Not a huge change. We're adding a password key to our users with its value set to the plain text version of the password, then we're looping over our user object and adding a new password_hash key where we're doing the actual hashing. Finally, we're mapping over the users and saving them to the database without the `password` key with the help of the spread operator.
+
+# Fixing our login logic
+Our login function works, but we're not really handling any errors, so if we enter a wrong username or password, our app crashes. Let's take care of that.

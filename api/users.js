@@ -1,7 +1,10 @@
 const express = require('express');
 const router = express.Router();
+const postsRouter = express.Router({ mergeParams: true });
 const queries = require('../db/queries');
 const auth = require('../middleware/auth');
+router.use('/:id/posts', postsRouter);
+
 
 router.get('/', (req, res) => {
     queries.getAll('users').then(users => {
@@ -15,7 +18,13 @@ router.get('/:id', (req, res) => {
     });
 });
 
-router.post('/signup', (req, res) => {
+postsRouter.get('/', (req, res) => {
+    queries.getPostByUser(req.params.id).then(posts => {
+        res.json(posts);
+    });
+});
+
+router.post('/', (req, res) => {
     queries.createUser(req.body.username, req.body.email, req.body.password).then(user => {
         res.json(user[0]);
     });
@@ -26,10 +35,10 @@ router.post('/login', (req, res) => {
         res.status(401).send({ error: "Wrong username or password" });
     } else {
         queries.login(req.body.username, req.body.password).then((user) => {
-            res.json(auth.getToken(user.id, user.username));
+            res.json(auth.getToken(user.id, user.username, user.email));
         })
             .catch((error) => {
-                res.status(401).send({ error: 'Wrong username or password' });
+                res.status(401).send({ error: error.message });
             });
     }
 });
