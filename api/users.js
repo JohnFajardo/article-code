@@ -36,10 +36,9 @@ router.post('/login', (req, res) => {
     } else {
         queries.login(req.body.username, req.body.password).then((user) => {
             res.json(auth.getToken(user.id, user.username, user.email));
-        })
-            .catch((error) => {
-                res.status(401).send({ error: error.message });
-            });
+        }).catch((error) => {
+            res.status(401).send({ error: error.message });
+        });
     }
 });
 

@@ -45,7 +45,7 @@ module.exports = {
     },
 
     async createPost(id, title, body) {
-        return knex('posts').returning(['title', 'body']).insert({ user_id: id, title: title, body: body });
+        return knex('posts').insert({ body: body, title: title, user_id: id });
     },
 
     createComment(postId, userId, body) {
