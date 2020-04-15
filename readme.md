@@ -733,9 +733,9 @@ So far our API works, but it could use some work. For example, we’re not reall
 
 # Part 5
 
-If you're new to the series, click here for part 1, part 2, part 3 and part 4. Our API is ready so it's time for a quick frontend, but first, let's take care of a few issues we left unsolved and make it do a little more.
+If you're new to the series, click here for part 1, part 2, part 3 and part 4. Our API is ready so it's time for a quick frontend, but first, let's take care of a few issues we left unsolved and make it do a little more. This is going to be a longer post so I won't explain every change in depth as often as in the previous parts. I will show you all the scss code, but I'm not going to explain them either.
 
-## Fixing the user seed file
+## Updating the user seed file
 Our seed file worked at first, but then we were copying hashes from somewhere else and hardcoded them into the file. This works, but ideally, we should be generating our hashes at runtime, so open your seed file and change it like so:
 
 ```
@@ -755,7 +755,1162 @@ exports.seed = (knex) => {
     });
 }
 ```
+
 Not a huge change. We're adding a password key to our users with its value set to the plain text version of the password, then we're looping over our user object and adding a new password_hash key where we're doing the actual hashing. Finally, we're mapping over the users and saving them to the database without the `password` key with the help of the spread operator.
 
-# Fixing our login logic
-Our login function works, but we're not really handling any errors, so if we enter a wrong username or password, our app crashes. Let's take care of that.
+## Updating the remaining seed files
+We also need to update the other files to play better with our increments. Open the remaining seed files and change them so they go from
+
+```
+exports.seed = function (knex) {
+  return knex('posts').del() // or 'comments'
+    .then(function () {
+[...]
+```
+
+to 
+
+```
+exports.seed = function (knex) {
+  knex('posts').del();
+  return knex.raw('TRUNCATE TABLE posts RESTART IDENTITY CASCADE')
+    .then(function () {
+[...]
+```
+
+## Updating the auth file
+In your `/middleware/auth` folder, update the `getToken()` function from
+
+```
+getToken(userID, username) {
+```
+
+to
+
+```
+getToken(userID, username, email) {
+```
+
+so that it can also take an email string.
+
+## Updating our queries file
+Our queries files works for the most part, but we still have some work to do. Here's what the final version looks like:
+
+```
+    getAll(table) {
+        return table == 'users' ? knex.table('users').select('id', 'username') : knex(table);
+    },
+
+    getAllComments(id) {
+        return knex.select([
+            'comments.id',
+            'comments.post_id',
+            'comments.body',
+            'users.username',
+        ]).from('comments').innerJoin('users', 'users.id', '=', 'comments.user_id')
+            .where('comments.post_id', '=', id).orderBy('comments.id', 'asc');
+    },
+
+    getAllPosts() {
+        return knex.select([
+            'posts.id',
+            'posts.user_id',
+            'posts.title',
+            'posts.body',
+            'users.username'
+        ]).from('posts').innerJoin('users', 'users.id', '=', 'posts.user_id').orderBy('posts.id', 'desc');
+    },
+
+    getOne(table, id) {
+        return table == 'users' ? knex.table('users').select('id', 'username').first() : knex(table).where('id', id).first();
+    },
+
+    getPostsByUser(id) {
+        return knex.table('posts').where('user_id', id);
+    },
+
+    async createUser(username, email, password) {
+        try {
+            let password_hash = await argon.hash(password);
+            return knex('users').returning(['username', 'email']).insert({ username: username, email: email, password_hash: password_hash });
+        } catch (error) {
+            process.exit(1);
+        }
+    },
+
+    async createPost(id, title, body) {
+        return knex('posts').insert({ body: body, title: title, user_id: id });
+    },
+
+    createComment(postId, userId, body) {
+        return knex('comments').returning(['body']).insert({ post_id: postId, user_id: userId, body: body });
+    },
+
+    async login(username, password) {
+        let getUser = await knex('users').where('username', username);
+        let user = getUser[0];
+
+        try {
+            if (await argon.verify(user.password_hash, password)) {
+                return user;
+            }
+            throw Error('Wrong username or password');
+        } catch (e) {
+            throw Error('Wrong username or password');
+        }
+    },
+
+    async getToken(token) {
+        newToken = auth.decodeToken(token)
+        return newToken;
+    }
+}
+```
+
+* The first change is to our getAll query. We changed it so it has a check for the queried table. If the table is `users`, it will only return the id and the username, otherwise it would include the email and password hash. If it's any other table, it returns anything. Admittedly, we could've built a getAll method for every table, but I wanted to make this one parametric to illustrate how easy it is to add some simple logic.
+* Then we built more queries, called getAllComments and getAllPosts, which illustrates the last point.
+* Then we changed the getOne query with a check that's similar to the first one.
+* We added a createPost query and then we fixed our login query to really handle errors.
+
+## Updating our route files
+Our root files need some updating too. Let's start with `/users`:
+
+```
+const express = require('express');
+const router = express.Router();
+const postsRouter = express.Router({ mergeParams: true });
+const queries = require('../db/queries');
+const auth = require('../middleware/auth');
+router.use('/:id/posts', postsRouter);
+
+
+router.get('/', (req, res) => {
+    queries.getAll('users').then(users => {
+        res.json(users);
+    });
+});
+
+router.get('/:id', (req, res) => {
+    queries.getOne('users', req.params.id).then(user => {
+        res.json(user);
+    });
+});
+
+postsRouter.get('/', (req, res) => {
+    queries.getPostsByUser(req.params.id).then(posts => {
+        res.json(posts);
+    });
+});
+
+router.post('/', (req, res) => {
+    queries.createUser(req.body.username, req.body.email, req.body.password).then(user => {
+        res.json(user[0]);
+    });
+});
+
+router.post('/login', (req, res) => {
+    if (req.body.username == '' || req.body.password == '') {
+        res.status(401).send({ error: "Wrong username or password" });
+    } else {
+        queries.login(req.body.username, req.body.password).then((user) => {
+            res.json(auth.getToken(user.id, user.username, user.email));
+        }).catch((error) => {
+            res.status(401).send({ error: error.message });
+        });
+    }
+});
+
+router.post('/profile', (req, res) => {
+    queries.getToken(req.header('Authorization').replace('Bearer: ', '')).then((data) => {
+        res.json(data);
+    });
+});
+
+module.exports = router;
+```
+* The most important change on this file is on lines 3 and 6 and they're related to the `postRouter.get('/')` route. What we're basically doing is adding a new route called `postRouter` and then setting `mergeParams: true` as it options. This allows for nesting and calling "one route from the other". In a nutshell, this allows us to have something like `user/posts` to get all posts made by a specific user. We will talk a bit more about this at the very end of the article.
+* The rest of the changes are minor edits and cleanups that are self-explanatory.
+
+Now we need to update the `posts` router to get both all and single posts and to create new ones:
+
+```
+const express = require('express');
+const router = express.Router();
+const queries = require('../db/queries');
+
+router.get('/', (req, res) => {
+    queries.getAllPosts().then(posts => {
+        res.json(posts);
+    })
+});
+
+router.get('/:id', (req, res) => {
+    queries.getOne('posts', req.params.id).then(post => {
+        res.json(post);
+    });
+});
+
+router.post('/new', (req, res) => {
+    queries.createPost(req.body.user_id, req.body.title, req.body.body).then(post => {
+        res.json(post[0]);
+    });
+});
+
+module.exports = router;
+```
+
+And Finally, we update our comments file in a similar fashion:
+
+```
+const express = require('express');
+const router = express.Router();
+const queries = require('../db/queries');
+
+router.get('/:id', (req, res) => {
+    queries.getAllComments(req.params.id).then(comments => {
+        res.json(comments);
+    })
+});
+
+// postId, userId, body
+router.post('/', (req, res) => {
+    queries.createComment(req.body.postId, req.body.userId, req.body.body).then(comment => {
+        res.json(comment);
+    })
+});
+
+module.exports = router;
+```
+
+With this, we are done with our API. Now let's go for the fun part!
+
+## Building a simple React frontend for our API
+We did a lot of work, but let's face it, just rendering a bunch of json is not the most exciting thing in the world, so let's put our shiny new API to use!
+
+We are going to use create-react-app. If you don't have it installed, fire up a terminal and run `npm install -g create-react-app`. This will install create-react-app globally so you can start using it. To do so, launch a terminal in the folder of your choice (or stay in the one you were in when you installed CRA) and run `npx create-react-app my-api-frontend` and then wait for it to finish. We need a few more packages, so after CRA is done, cd into `my-api-frontend` and run `npm i -S bulma react-router-dom md5`
+
+## The file structure
+Go into the `/src` directory and delete `App.css`, `index.css` and `logo.svg`. Then create the following files and folders:
+
+```
+/src
+├── index.js
+├── App.js
+├── App.test.js
+├── components
+│   └── Users
+│   │   ├── Login.jsx
+│   │   ├── SignUp.jsx
+│   │   └── LoginError.jsx
+│   ├── Home
+│   │   └── Home.jsx
+│   ├── NavBar
+│   │   └── NavBar.jsx
+│   ├── PostList
+│   │   └── PostList.jsx
+│   ├── Post
+│   │   └── Post.jsx
+│   ├── Comments
+│   │   ├── CommentForm.jsx
+│   │   └── Comments.jsx
+│   ├── NewPost
+│   │   └── NewPost.jsx
+│   ├── NotFound
+│   │   ├── lost.gif
+│   │   └── NotFound.jsx
+├── sass
+│   ├── comments.scss
+│   ├── home.scss
+│   ├── loginError.scss
+│   ├── login.scss
+│   ├── navbar.scss
+│   ├── newPost.scss
+│   ├── notFound.scss
+│   └── styles.scss
+├── serviceWorker.js
+└── setupTests.js
+```
+
+And now let's go into each file, but instead of going .
+
+## index.js
+```
+import React from 'react';
+import ReactDOM from 'react-dom';
+import App from './App';
+import * as serviceWorker from './serviceWorker';
+import { BrowserRouter } from "react-router-dom";
+
+ReactDOM.render(
+  <React.StrictMode>
+    <BrowserRouter>
+      <App />
+    </BrowserRouter>
+  </React.StrictMode>,
+  document.getElementById('root')
+);
+
+serviceWorker.unregister();
+```
+This is the starting poit of our application. The most important thing we're doing here is we're importing BrowserRouter and wrapping our `<App />` call with it so we can have access to the history.
+
+
+## App.js
+```
+import React from 'react';
+import { Switch, Route } from 'react-router-dom';
+import './sass/styles.scss';
+import Login from './components/Users/Login';
+import SignUp from './components/Users/SignUp';
+import Home from './components/Home/Home';
+import Post from './components/Post/Post';
+import NewPost from './components/NewPost/NewPost';
+import NotFound from './components/NotFound/NotFound';
+
+
+function App() {
+  return (
+    <div>
+      <Switch>
+        <Route path='/post/new' component={NewPost} />
+        <Route path='/post/:id' component={Post} />
+        <Route path='/signup' component={SignUp} />
+        <Route path='/home' component={Home} />
+        <Route exact path='/' component={Login} />
+        <Route component={NotFound} />
+      </Switch>
+    </div>
+  );
+}
+
+export default App;
+```
+
+Again, self explanatory. This is where we define the routes our app is going to use and the main takeaway here is that the routes defined here have absolutely nothing to do with the routes we're defined in our API. We're also importing our styles file from the `/sass` folder, which will be rendered into CSS.
+
+Another important thing to note is that the last `<Route />` call has no path and it's listed at the end of the list. This means that if there's not a match for any of the routes above it, it will match any route and will render the `NotFound` component which will be our 404 page.
+
+## styles.scss
+```
+#root {
+    min-height: 100vh;
+}
+
+body {
+    background-color: #F7F7F7;
+}
+
+
+@import './login.scss';
+@import './loginError.scss';
+@import './navbar.scss';
+@import './home.scss';
+@import './comments.scss';
+@import './notFound.scss';
+@import './newPost.scss';
+@import '~bulma/bulma.sass';
+
+```
+This is the only scss file we're going to import. All of the other ones will be called from this one.
+
+## Login.jsx
+
+```
+import React, { Component } from 'react'
+import { Link } from 'react-router-dom';
+import LoginError from './LoginError';
+
+class Login extends Component {
+
+    state = {
+        username: "",
+        password: "",
+        loginError: false,
+        loginErrorMessage: "Test"
+    }
+
+    handleLoginForm = (e) => {
+        e.preventDefault();
+        fetch('http://localhost:3000/users/login', {
+            method: 'POST',
+            headers: {
+                'Accept': 'Application/json',
+                'Content-type': 'Application/json'
+            },
+            body: JSON.stringify(this.state)
+        }).then(res => res.json())
+            .then(data => {
+                if (data.error) {
+                    this.setState({ 'loginError': true, 'loginErrorMessage': data.error });
+                } else {
+                    localStorage.token = `Bearer: ${data}`;
+                    this.props.history.push('/home');
+                }
+            })
+    }
+
+    handleChange = (event) => {
+        this.setState({ [event.target.name]: event.target.value });
+    }
+
+    render() {
+        return (
+            <>
+                {this.state.loginError ? <LoginError message={this.state.loginErrorMessage} /> : null}
+                <div id="login">
+                    <div className="login-card">
+                        <div className="card-title">
+                            <h1 className="is-size-4 has-text-weight-bold">Please log in</h1>
+                        </div>
+                        <div className="login-content">
+                            <form onSubmit={this.handleLoginForm}>
+                                <input className="username" name="username" value={this.state.username} onChange={this.handleChange} type="text" title="username" placeholder="Username" />
+                                <input className="password" type="password" title="password" placeholder="Password" name="password" value={this.state.password} onChange={this.handleChange} />
+                                <button type="submit" className="btn btn-primary">Log in!</button>
+                                <div className="options">
+                                    <p>Need an account? <Link to={{ pathname: "/signup" }}>Sign up!</Link></p>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            </>
+        )
+    }
+}
+
+export default Login
+```
+
+Nothing special happening here. Just a controlled form that makes our first request to the API!
+
+
+## login.scss
+
+```
+$primary:      hsl(171, 100%, 41%);
+$grey-darker:  hsl(0, 0%, 21%);
+$grey-dark:    hsl(0, 0%, 29%);
+$grey:         hsl(0, 0%, 48%);
+$grey-light:   hsl(0, 0%, 71%);
+$grey-lighter: hsl(0, 0%, 86%);
+$green-link: #00d1b2;
+
+
+#login {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	height: 100vh;
+	background: #F7F7F7;
+
+	.login-card {
+		background: #fff;
+		width: 24rem;
+		box-shadow: 0 0 7px 0 rgba(0, 0, 0, 0.11);
+
+		.card-title {
+			background-color: darken($primary, 5%);
+			padding: 2rem;
+
+			h1 {
+				color: #fff;
+				text-align: center;
+				font-size: 1.2rem;
+			}
+		}
+
+		.login-content {
+			padding: 3rem 2.5rem 2rem;
+		}
+
+		.username, .email, .password {
+			display: block;
+			width: 100%;
+			font-size: 1rem;
+			margin-bottom: 1.75rem;
+			padding: 0.25rem 0;
+			border: none;
+			border-bottom: 1px solid $grey-lighter;
+			transition: all .5s;
+
+			&:hover {
+				border-color: $grey;
+			}
+
+			&:active, &:focus {
+				border-color: $primary;
+			}
+		}
+
+		a {
+            color: $green-link;
+            transition: color .5s, border-color .5s;
+            &:hover {
+                color: darken($green-link, 10%);
+            }
+		}
+
+		.options {
+            text-align: center;
+			color: $grey-light;
+			margin-top: 1.5rem;
+		}
+
+		button {
+			cursor: pointer;
+			font-size: 1.2rem;
+			color: $primary;
+			border-radius: 4rem;
+			display: block;
+			width: 100%;
+			background: transparent;
+			border: 2px solid $primary;
+			padding: 0.9rem 0 1.1rem;
+			transition: color .5s, border-color .5s;
+
+			&:hover, &:focus {
+				color: darken($primary, 10%);
+				border-color: darken($primary, 10%);
+			}
+
+			&:active {
+				transform: translateY(1px);
+			}
+		}
+	}
+}
+
+
+input:focus,
+select:focus,
+textarea:focus,
+button:focus {
+	outline: none;
+}
+```
+
+Just a few styles to make the login form look better. If you're following along, it should look something like this:
+
+[Login image]
+
+## LoginError.jsx
+```
+import React from 'react'
+
+export default function LoginError(props) {
+    return (
+
+        <div className="flash">
+            <div class="notification is-danger is-light">
+                <p>{props.message}</p>
+            </div>
+        </div>
+    )
+}
+
+```
+
+## loginError.scss
+```
+.flash {
+    width: 24rem;
+    position: absolute;
+    margin-left: auto;
+    margin-right: auto;
+    left: 0;
+    right: 0;
+    top:200px;
+}
+```
+This is a very small component what we'll use to render any errors that might arise during login.
+
+## Signup.jsx
+```
+import React, { Component } from 'react'
+import { Link } from 'react-router-dom';
+
+class SignUp extends Component {
+
+    state = {
+        username: '',
+        email: '',
+        password: ''
+    }
+
+    handleSubmit = (event) => {
+        event.preventDefault();
+        fetch('http://localhost:3000/users', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'Application/Json',
+                'Accept': 'Application/Json'
+            },
+            body: JSON.stringify(this.state)
+        }).then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    console.log(data.error)
+                } else {
+                    this.props.history.push('/login');
+                }
+            });
+    }
+
+    handleChange = (event) => {
+        this.setState({ [event.target.name]: event.target.value });
+    }
+
+    render() {
+        return (
+            <div id="login">
+                <div className="login-card">
+                    <div className="card-title">
+                        <h1 className="is-size-4 has-text-weight-bold">Please sign up</h1>
+                    </div>
+                    <div className="login-content">
+                        <form onSubmit={this.handleSubmit}>
+                            <input className="username" name="username" type="text" value={this.state.username} onChange={this.handleChange} placeholder="Username" />
+                            <input className="email" name="email" type="email" value={this.state.email} onChange={this.handleChange} placeholder="email" />
+                            <input className="password" name="password" type="password" value={this.state.password} onChange={this.handleChange} placeholder="password" />
+                            <button type="submit" className="btn btn-primary btn btn-link">Sign up!</button>
+                            <div className="options">
+                                <p>Have an account? <Link className="btn btn-link" to={{ pathname: "/" }}>log in!!</Link></p>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+
+
+        )
+    }
+}
+
+export default SignUp
+```
+Pretty much the same as the login, just with a different request. We also reused the `login.scss` file so there's no need to write any styles for it.
+
+## Home.jsx
+```
+import React, { Component } from 'react';
+import NavBar from '../NavBar/NavBar';
+import PostList from '../PostList/PostList';
+
+class Home extends Component {
+    state = {
+        currentUser: {
+            id: "",
+            username: "",
+            email: ""
+        },
+        posts: []
+    }
+
+    componentDidMount() {
+        if (!localStorage.token) {
+            this.props.history.push('/')
+        } else {
+            this.getUser();
+        }
+    }
+
+    getUser = async () => {
+        if (localStorage.token) {
+            await fetch('http://localhost:3000/users/profile', {
+                method: "POST",
+                headers: {
+                    'Authorization': localStorage.token
+                }
+            })
+                .then(resp => resp.json())
+                .then(data => this.setState({ currentUser: { id: data.user_id, username: data.username, email: data.email } }));
+            fetch(`http://localhost:3000/posts`)
+                .then(resp => resp.json())
+                .then(posts => this.setState({ posts: posts }));
+        }
+    }
+
+    render() {
+
+        return (
+            <div>
+                <NavBar history={this.props.history} user={this.state.currentUser} />
+                <section className="section">
+                    <div className="container box content">
+                        <div className="columns">
+                            <div className="column is-full has-background-white">
+                                <h1 className="has-text-centered is-size-3 has-text-weight-bold">Latest posts</h1>
+                                <PostList user={this.state.currentUser} posts={this.state.posts} />
+                            </div>
+                        </div>
+                    </div>
+                </section>
+            </div>
+        )
+    }
+}
+
+export default Home;
+
+```
+
+## home.scss
+
+```
+.main-container {
+    margin-top: 32px;
+}
+
+.content {
+    background-color: #fff;
+}
+```
+
+Alright, things start to get interesting! The first thing that happens when this component is loaded is it checks for a token, which was set upon successful login. If there's no token, it kicks us back to the login page. If it finds a token, it makes a post request to our API to decode it. It then grabs the result and saves the username, id and email to the state, fetches all posts and then sends them to the state.
+
+With the state fully loaded, we make two more things. We call the `<NavBar />` component at the top with the user info that is in our state, and then we render the `<PostList />` component with everything we have in the state. We'll get to the why in a bit.
+
+## NavBar.jsx
+
+```
+import React from 'react';
+import md5 from 'md5';
+import { Link } from 'react-router-dom';
+
+class NavBar extends React.Component {
+
+    handleLogout = () => {
+        localStorage.clear();
+        this.props.history.push('/');
+    }
+
+    user = () => {
+        return !this.props.user ? this.props.history.location.state.user : this.props.user;
+    }
+
+    handleNewPost = () => {
+        this.props.history.push('/post/new', { user: this.user() })
+    }
+
+    homeLink = () => {
+        return this.props.history.location.pathname == '/home' ? null : <p className="home"><Link className="has-text-primary" to="/home">Back to home</Link></p>;
+    }
+
+    render() {
+
+        return (
+            <nav className="navbar" role="navigation" aria-label="main navigation">
+                <div className="container">
+                    <div className="navbar-start">
+                        <p className="navbar-item">
+                            <img
+                                className="profile-pic"
+                                src={`https://www.gravatar.com/avatar/${md5(this.user().email)}`}
+                                alt="User profile pic" />
+                                Hello {this.user().username}
+                        </p>
+                    </div>
+                    <div className="navbar-center">
+                        {this.homeLink()}
+                    </div>
+                    <div className="navbar-end">
+                        <div className="navbar-item">
+                            <div className="buttons">
+                                <button className="button is-primary has-text-weight-bold" onClick={this.handleNewPost}>New Post</button>
+                                <button className="button is-primary has-text-weight-bold" onClick={this.handleLogout}>Log out</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </nav>
+        )
+    }
+}
+
+export default NavBar;
+```
+
+## navBar.scss
+```
+.profile-pic {
+    border-radius: 50%;
+    margin-right: 16px;
+}
+
+.navbar {
+    box-shadow: 0 0.25em 1em -0.125em rgba(10, 10, 10, 0.1), 0 0px 0 1px rgba(10, 10, 10, 0.02);
+}
+
+.navbar-item.navbar-center {
+    flex-grow: 1;
+    flex-direction: column;
+    justify-content: center;
+    margin-top: 16px;
+}
+
+.home {
+    padding-top:16px;
+}
+```
+This one is a little tricky:
+* The first thing to notice is that we're importing the `md5` package. If you sign up to the app with your real email, provided you have a gravatar account, your email address is turned into an md5 hash to render your profile picture using the url `https://www.gravatar.com/avatar/md5-hash-of-your-email` as the `src` attribute for the `img` tag.
+* Then we render the username from the `user.name` props we sent. But wait a minute, what's that on line 12? Well, we're going to call our `<NavBar />` from different locations, so we need to check where our user prop is, so we built this little function whose sole job is to check where our user prop is coming from.
+* Then we have a similar check to see what page we're on. If we're in any page other than `/home`, it will render a link to take us back there.
+* The rest of the file is self explanatory with a log out and new post button, each with its respective handler function.
+
+## PostList.jsx
+
+```
+import React, { Component } from 'react';
+import { Link } from 'react-router-dom';
+
+class PostList extends Component {
+
+    renderPosts = () => {
+        return this.props.posts.map(post => {
+            return (
+                <div key={post.id}>
+                    <Link className="is-size-4 has-text-weight-bold has-text-primary" to={{ pathname: `/post/${post.id}`, state: { user: this.props.user } }}>{post.title}</Link>
+                    <p className="is-size-7 has-text-weight-light">By {post.username}</p>
+                    <p>{post.body}</p>
+                    <hr />
+                </div>
+            )
+        });
+    }
+
+    render() {
+        return (
+            <div>
+                {this.renderPosts()}
+            </div>
+        )
+    }
+}
+
+export default PostList;
+```
+This one was called from `<Home />` and it also gets the user props. The reason why is we're rendering the list of our posts, and each one has a link that points to the individual post -for you Rails folks, think index and show-, which have a comment form, so we're going to need the user information later on. Are you starting to see a convoluted pattern of bouncing data around until we reach the needed component? Hold that thought, we are going to talk about it at the end.
+
+## Post.jsx
+
+```
+import React, { Component } from 'react'
+import NavBar from '../NavBar/NavBar'
+import Comments from '../Comments/Comments';
+import CommentForm from '../Comments/CommentForm'
+
+class Post extends Component {
+
+    state = {
+        post: {
+            title: '',
+            body: ''
+        },
+        comments: []
+    }
+
+    componentDidMount() {
+        fetch(`http://localhost:3000/posts/${this.props.match.params.id}`)
+            .then(response => response.json())
+            .then(post => this.setState({ post: { title: post.title, body: post.body } }));
+        fetch(`http://localhost:3000/comments/${this.props.match.params.id}`)
+            .then(response => response.json())
+            .then(comments => this.setState({ comments: comments }));
+    }
+
+    showComments = () => {
+        return this.state.comments.map(comment => {
+            return <Comments key={comment.id ? comment.id : Math.random().toString(36).replace(/[^a-z]+/g, '').substr(0, 5)
+            } user={comment.username} body={comment.body} />
+        });
+    }
+
+    addToComments = (user, body) => {
+
+        fetch(`http://localhost:3000/comments/`, {
+            method: 'POST',
+            headers: {
+                'Accept': 'Application/Json',
+                'Content-Type': 'Application/Json'
+            },
+            body: JSON.stringify({ postId: `${this.props.match.params.id}`, userId: `${this.props.history.location.state.user.id}`, body: body })
+        }).then(response => response.json());
+        this.setState({ comments: [...this.state.comments, { 'username': user, 'body': body }] })
+
+    }
+
+    render() {
+        return (
+            <div>
+                <NavBar history={this.props.history} user={this.props.history.location.state.user} />
+                <section className="section">
+                    <div className="container box content">
+                        <div className="columns">
+                            <div className="column is-full has-background-white">
+                                <h1 className="has-text-centered is-size-3 has-text-weight-bold">{this.state.post.title}</h1>
+                                <p>{this.state.post.body}</p>
+                                <hr />
+                                {this.showComments()}
+                                <hr />
+                                <CommentForm addToComments={this.addToComments} user={`${this.props.history.location.state.user.username}`} />
+                            </div>
+                        </div>
+                    </div>
+                </section>
+            </div>
+        )
+    }
+}
+
+export default Post
+```
+As soon as we load this component, we're fetching our API for the specific post we clicked and sending the result to the state. After that, we're using the post id to make another fetch, this time for the comments that belong to this specific post. We then display the post from the state and map over the comments array to render the comments. There are two other important things to notice here:
+* Our `addComment()` function has a double job: It first makes a post request to the API to save the comment, and then adds the comment to the state so it gets added via ajax to the list of comments. This new comment is ephemeral and will be replaced by the one we saved on the database the next time we visit the post.
+* We're calling our `<NavBar />` again, but since `Post.jsx` was called from a router `<Link />`, the user prop won't be available to the `<NavBar />` from `this.props.user`, but from `this.props.history.location.state.user`. Are you dizzy yet?
+
+## Comments.jsx
+
+```
+import React, { Component } from 'react'
+
+class Comments extends Component {
+    render() {
+        return (
+            <div className="has-background-light comment">
+                <p className="commenter"><strong>{this.props.user}</strong> says:</p >
+                <p>{this.props.body}</p>
+            </div >
+        )
+    }
+}
+
+export default Comments;
+```
+Couldn't be simpler. Just a plain old div that receives the comment contents to display on the post view.
+
+## CommentForm.jsx
+
+```
+import React, { Component } from 'react'
+
+class CommentForm extends Component {
+    state = {
+        body: '',
+        user: ''
+    }
+
+    componentDidMount() {
+        this.setState({ user: `${this.props.user}` })
+    }
+
+    handleChange = (event) => {
+        this.setState({ [event.target.name]: event.target.value })
+    }
+
+    handleSubmit = (event) => {
+        event.preventDefault();
+        this.props.addToComments(this.state.user, this.state.body);
+        this.setState({ body: '' });
+    }
+
+    handleCancel = (event) => {
+        event.preventDefault();
+        this.setState({ body: '' });
+    }
+
+    render() {
+        return (
+            <div className="commentFormContainer">
+                <form onSubmit={this.handleSubmit}>
+                    <div className="field">
+                        <label className="label">Add your Voice!</label>
+                        <div className="control">
+                            <textarea className="textarea" name="body" value={this.state.body} onChange={this.handleChange} placeholder="Your comment..."></textarea>
+                        </div>
+                        <div className="field">
+                            <div className="control is-pulled-right">
+
+                                <div className="control is-pulled-right buttons">
+                                    <button className="button is-danger is-light cancel commentButton" onClick={this.handleCancel}>Cancel</button>
+                                    <button className="button is-primary commentButton">Submit</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        )
+    }
+}
+
+export default CommentForm
+```
+Not much going on here either. A simple controlled form that will make a post request to the API to save the comment.
+
+## comments.scss
+```
+.commentFormContainer {
+    width: 500px;
+    margin: 0 auto;
+}
+
+.commentButton {
+    margin-top:16px;
+}
+
+.comment{
+    margin: 16px 0px;
+    padding: 16px;
+    border: 1px solid #f5f5f5;
+}
+```
+## NewPost.jsx
+```
+import React, { Component } from 'react'
+import NavBar from '../NavBar/NavBar'
+
+class NewPost extends Component {
+
+
+    state = {
+        user_id: this.props.location.state.user.id,
+        title: '',
+        body: ''
+    }
+
+    handleChange = (event) => {
+        this.setState({ [event.target.name]: event.target.value });
+    }
+
+    handleSubmit = async event => {
+        event.preventDefault();
+        await fetch('http://localhost:3000/posts/new', {
+            method: 'POST',
+            headers: {
+                'Accept': 'Application/json',
+                'Content-type': 'Application/json'
+            },
+            body: JSON.stringify(this.state)
+        }).then(resp => resp.json())
+            .then(this.props.history.push('/home'));
+    }
+
+    handleCancel = (event) => {
+        event.preventDefault();
+        this.setState({ title: '', body: '' })
+    }
+
+    render() {
+        return (
+            <div>
+                <NavBar history={this.props.history} user={this.props.history.location.state.user} />
+                <section className="section">
+                    <div className="container box content">
+                        <div className="columns">
+                            <div className="column is-full has-background-white">
+                                <h1 className="has-text-centered is-size-3 has-text-weight-bold">Adding a new post</h1>
+                                <form onSubmit={this.handleSubmit}>
+
+                                    <div className="field">
+                                        <label className="label">Post title</label>
+                                        <div className="control">
+                                            <input className="input" name="title" value={this.state.title} onChange={this.handleChange} type="text" placeholder="Text input" />
+                                        </div>
+                                    </div>
+
+                                    <div className="field">
+                                        <label className="label">Post contents</label>
+                                        <div className="control">
+                                            <textarea className="textarea" name="body" value={this.state.body} onChange={this.handleChange} placeholder="Your post content..."></textarea>
+                                        </div>
+                                        <div className="field">
+                                            <div className="control is-pulled-right buttons">
+                                                <button className="button is-danger is-light cancel postButton" onClick={this.handleCancel}>Cancel</button>
+                                                <button className="button is-primary postButton">Submit</button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+            </div>
+        )
+    }
+}
+
+export default NewPost
+
+```
+This one is also simple. Just a component that sets the user prop on load and a simple controlled form that on submission will trigger a fetch with the data entered to save a new post.
+
+## newPost.scss
+```
+.postButton {
+    margin-top:16px;
+}
+
+.control textarea {
+    height: 400px;
+}
+```
+
+## NotFound.jsx
+```
+import React, { Component } from 'react';
+import lost from './lost.gif';
+import { Link } from 'react-router-dom';
+
+class NotFound extends Component {
+    render() {
+        return (
+            <div>
+                <section className="section">
+                    <div className="container box content">
+                        <div className="columns">
+                            <div className="column is-full has-background-white">
+                                <h1 className="has-text-centered is-size-3 has-text-weight-bold">Oops! You took a wrong turn!</h1>
+                                <div>
+                                    <img className="centered-image" src={lost} alt="404 Not found" />
+                                    <p className="center"><Link className="has-text-primary is-size-2 has-text-weight-bold" to="/home">Back to home</Link></p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+            </div>
+        )
+    }
+}
+
+export default NotFound;
+```
+Nothing but a huge gif of lost John Travolta with a link to go back home. This could've been a function component since we're not using state or props, but hey.
+
+## notFound.scss
+```
+.centered-image {
+  margin: 0 auto;
+  display: block;
+ }
+
+ .center {
+  text-align: center;
+  margin-top: 16px;
+}
+```
+
+## Closing thoughts
+Our simple app is finished, but there's still room for growth if you're up to the challenge:
+
+* Our backend has a auth file in a middleware folder, but that's not really middleware, it's just an helper function.
+* We defined a function and a route for getting all the posts from a specific user. Want to implement that function? A nice way could be clicking on a username takes you to their profile and a list of their posts.
+* Our LoginError is set up so it can display our errors coming from the backend, but we could change it around so it can handle other types of errors.
+* Our state management is atrocius and a crime against humanity! We are passing the user object all around and all this bouncing gets tiring pretty soon. I designed it this way to illustrate the problem that libraries like redux solve. Instead of passing our objects back and forth, we have a single source of truth at the top from which with can read ad write without the mess of having state and props all around the place. If you're intimidated by this, another way of solving this would've been using context or even some higher order components to keep our state at the top of the component hierarchy. However, I must stress that redux should be the way to go.
+* We protected the `/home` route, but if we log out, and revisit say `/post/new`, we understandably get an error. If you feel like fixing it, take a good look at the error and try to implement a check for the missing information (Hint: is `this.props.location.state is undefined`).
+* We also could have used a better directory structure, but this is a highly debated topic that mostly boils down to personal preference.
+
+With this, we finally reached the end of our project. Thank you so much for reading, let me know your thoughts!
